@@ -1,0 +1,63 @@
+name: Tourism Project Pipeline
+
+on:
+  push:
+    branches:
+      - main  # Automatically triggers on push to the main branch
+
+jobs:
+  register-dataset:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Dependencies
+        run: pip install huggingface_hub
+      - name: Upload Dataset to Hugging Face Hub
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -c "from huggingface_hub import HfApi; api = HfApi(); api.upload_file(path_or_fileobj='data/tourism.csv', path_in_repo='tourism.csv', repo_id='akhilbuilds/tourism-data', repo_type='dataset', token='${{ secrets.HF_TOKEN }}')"
+
+  data-prep:
+    needs: register-dataset
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Dependencies
+        run: pip install pandas scikit-learn huggingface_hub
+      - name: Run Data Preparation
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          # This mimics the cleaning code we ran in Colab
+          python -c "import pandas as pd; from sklearn.model_selection import train_test_split; from huggingface_hub import HfApi; df = pd.read_csv('data/tourism.csv'); df['Gender']=df['Gender'].replace('Fe Male','Female'); df.drop(columns=['CustomerID'], inplace=True, errors='ignore'); df.fillna(df.median(numeric_only=True), inplace=True); train, test = train_test_split(df, test_size=0.3, random_state=42); train.to_csv('train.csv', index=False); test.to_csv('test.csv', index=False); api = HfApi(); api.upload_file(path_or_fileobj='train.csv', path_in_repo='train.csv', repo_id='akhilbuilds/tourism-data', repo_type='dataset', token='${{ secrets.HF_TOKEN }}'); api.upload_file(path_or_fileobj='test.csv', path_in_repo='test.csv', repo_id='akhilbuilds/tourism-data', repo_type='dataset', token='${{ secrets.HF_TOKEN }}')"
+
+  model-traning:
+    needs: data-prep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Dependencies
+        run: pip install pandas scikit-learn joblib huggingface_hub mlflow
+      - name: Start MLflow Server
+        run: |
+          nohup mlflow ui --host 0.0.0.0 --port 5000 &
+          sleep 5
+      - name: Model Building
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -c "import pandas as pd; from sklearn.ensemble import RandomForestClassifier; import joblib; from huggingface_hub import HfApi; train = pd.read_csv('https://huggingface.co/datasets/akhilbuilds/tourism-data/resolve/main/train.csv'); X = pd.get_dummies(train.drop('ProdTaken', axis=1)); y = train['ProdTaken']; model = RandomForestClassifier(n_estimators=100); model.fit(X, y); joblib.dump(model, 'model.joblib'); api = HfApi(); api.upload_file(path_or_fileobj='model.joblib', path_in_repo='model.joblib', repo_id='akhilbuilds/tourism-package-predictor', repo_type='model', token='${{ secrets.HF_TOKEN }}')"
+
+  deploy-hosting:
+    runs-on: ubuntu-latest
+    needs: [model-traning, data-prep, register-dataset]
+    steps:
+      - uses: actions/checkout@v3
+      - name: Install Dependencies
+        run: pip install huggingface_hub
+      - name: Push files to Frontend Hugging Face Space
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python -c "from huggingface_hub import HfApi; api = HfApi(); files=['app.py', 'Dockerfile', 'requirements.txt']; [api.upload_file(path_or_fileobj=f, path_in_repo=f, repo_id='akhilbuilds/wellness-package-predictor', repo_type='space', token='${{ secrets.HF_TOKEN }}') for f in files]"
